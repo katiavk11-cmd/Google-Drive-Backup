@@ -1,0 +1,21 @@
+# Credenciais e Tokens do Google (SENSÍVEL)
+credentials.json
+token.json
+
+# Pastas de ambiente virtual do Python
+venv/
+.venv/
+env/
+
+# Arquivos temporários do Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs de erro e relatórios locais
+relatorio_arquivos.txt
+*.log
+
+# Arquivos do sistema operacional
+Thumbs.db
+.DS_Store
