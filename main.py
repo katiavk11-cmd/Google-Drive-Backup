@@ -7,22 +7,16 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-# ==============================================================================
-# INFORMAÇÕES SENSÍVEIS - NÃO COMPARTILHE OS ARQUIVOS ABAIXO:
-# 1. credentials.json: Contém a chave da sua aplicação no Google Cloud.
-# 2. token.json: Contém sua sessão ativa (acesso direto aos seus arquivos).
-# ==============================================================================
-
+# Escopo de acesso
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
-# CAMINHO GENÉRICO: Alterado para D:\ para evitar expor nomes de usuário do Windows
+# ======================= CONFIGURAÇÃO =======================
+# Caminho base no seu SSD (D:):
 CAMINHO_SSD_BASE = Path(r"D:\BACKUP_GOOGLE_DRIVE")
+# ============================================================
 
 def obter_servico():
-    """
-    Realiza a autenticação OAuth2. 
-    IMPORTANTE: Requer o arquivo 'credentials.json' na mesma pasta.
-    """
+    """Gerencia a autenticação e conexão com a API."""
     creds = None
     diretorio_script = Path(__file__).parent.absolute()
     caminho_token = diretorio_script / "token.json"
@@ -36,8 +30,7 @@ def obter_servico():
             creds.refresh(Request())
         else:
             if not caminho_creds.exists():
-                print("\n[ERRO CRÍTICO] Arquivo 'credentials.json' não encontrado!")
-                print("Acesse o Google Cloud Console para baixar suas credenciais.")
+                print(f"\n[ERRO] Arquivo 'credentials.json' não encontrado!")
                 sys.exit()
             flow = InstalledAppFlow.from_client_secrets_file(str(caminho_creds), SCOPES)
             creds = flow.run_local_server(port=0)
@@ -47,9 +40,7 @@ def obter_servico():
     return build('drive', 'v3', credentials=creds), creds
 
 def sincronizar_recursivo(service, creds, folder_id, caminho_local, stats):
-    """
-    Percorre a estrutura do Drive e sincroniza com o disco local.
-    """
+    """Percorre as pastas do Drive e baixa os arquivos para o SSD."""
     if not caminho_local.exists():
         caminho_local.mkdir(parents=True, exist_ok=True)
 
@@ -66,20 +57,21 @@ def sincronizar_recursivo(service, creds, folder_id, caminho_local, stats):
         mime_type = item['mimeType']
         
         if mime_type == 'application/vnd.google-apps.folder':
-            # Sanitização de nome para compatibilidade com Windows
+            # Remove caracteres inválidos para pastas no Windows
             nome_limpo = "".join([c for c in nome_original if c.isalnum() or c in (' ', '.', '_', '-')]).strip()
             sincronizar_recursivo(service, creds, item_id, caminho_local / nome_limpo, stats)
+        
         else:
-            # Tratamento de extensão para vídeos (.mp4)
+            # Garante a extensão .mp4 se o arquivo vir sem extensão do Drive
             nome_final = nome_original if "." in nome_original else nome_original + ".mp4"
             destino = caminho_local / nome_final
             tamanho_drive = int(item.get('size', 0))
 
-            # Verificação de sincronização (Idempotência)
             if destino.exists():
+                # Pula se o arquivo já existir com tamanho similar (evita re-download)
                 if abs(destino.stat().st_size - tamanho_drive) < 1024 * 1024:
                     stats['pulados'] += 1
-                    print(f"  [-] Já sincronizado: {nome_final}", end="\r")
+                    print(f"  [-] Já existe: {nome_final}", end="\r")
                     continue
 
             url = item.get('webContentLink')
@@ -100,33 +92,46 @@ def sincronizar_recursivo(service, creds, folder_id, caminho_local, stats):
                 except Exception as e:
                     stats['erros'].append(f"{nome_final} ({e})")
 
-def iniciar_backup():
+def iniciar_backup_por_lote():
+    """Interface principal que solicita o ID ao usuário."""
+    print("\n" + "="*60)
+    print("   GOOGLE DRIVE SYNC - MODO INTERATIVO")
     print("="*60)
-    print("   Sincronizador Google Drive para SSD (Versão GitHub)")
-    print("="*60)
+
+    # SOLICITAÇÃO DO ID AO USUÁRIO
+    entrada = input("\nCole aqui o ID da pasta (ou a URL do navegador): ").strip()
     
+    # Lógica para extrair o ID caso o usuário cole a URL inteira
+    id_pasta_alvo = entrada.split('/')[-1]
+
     try:
         service, creds = obter_servico()
         
-        # Solicita o ID da pasta ao usuário para não deixar hardcoded no código
-        print("\nDica: O ID está no final da URL da pasta no navegador.")
-        id_alvo = input("Digite o ID da pasta do Google Drive: ").strip()
-        id_alvo = id_alvo.split('/')[-1] # Limpa caso o usuário cole a URL inteira
-        
-        info_pasta = service.files().get(fileId=id_alvo, fields="name").execute()
+        # Obtém o nome da pasta para criar a estrutura no SSD
+        info_pasta = service.files().get(fileId=id_pasta_alvo, fields="name").execute()
         nome_pasta_raiz = info_pasta.get('name')
         
-        caminho_final = CAMINHO_SSD_BASE / nome_pasta_raiz
+        caminho_destino_final = CAMINHO_SSD_BASE / nome_pasta_raiz
+        
+        print(f"\n-> Pasta identificada: {nome_pasta_raiz}")
+        print(f"-> Local de destino: {caminho_destino_final}")
+        print("-" * 60)
+
         stats = {'baixados': 0, 'pulados': 0, 'erros': []}
+        sincronizar_recursivo(service, creds, id_pasta_alvo, caminho_destino_final, stats)
         
-        sincronizar_recursivo(service, creds, id_alvo, caminho_final, stats)
+        print("\n" + "="*60)
+        print(f"CONCLUÍDO: {stats['baixados']} baixados | {stats['pulados']} ignorados")
+        if stats['erros']:
+            print(f"FALHAS ({len(stats['erros'])}): Verifique a conexão ou permissões.")
+        print("="*60)
         
-        print(f"\nSincronização concluída em: {caminho_final}")
-        print(f"Baixados: {stats['baixados']} | Pulados: {stats['pulados']}")
-        os.startfile(caminho_final)
-        
+        # Abre a pasta no Windows Explorer automaticamente
+        os.startfile(caminho_destino_final)
+
     except Exception as e:
-        print(f"\n[ERRO]: {e}")
+        print(f"\n[ERRO]: Não foi possível acessar a pasta. Verifique se o ID está correto.")
+        print(f"Detalhes: {e}")
 
 if __name__ == "__main__":
-    iniciar_backup()
+    iniciar_backup_por_lote()
